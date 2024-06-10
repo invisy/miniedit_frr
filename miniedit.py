@@ -135,7 +135,7 @@ class CustomUserSwitch(UserSwitch):
 class LegacyRouter( Node ):
     "Simple IP router"
     def __init__( self, name, inNamespace=True, **params ):
-        Node.__init__( self, name, inNamespace, **params )
+        Node.__init__( self, name, inNamespace, privateDirs=['/var/run/frr'], **params )
 
     # pylint: disable=arguments-differ
     def config( self, **_params ):
@@ -143,6 +143,14 @@ class LegacyRouter( Node ):
             self.setParam( _params, 'setIP', ip='0.0.0.0' )
         r = Node.config( self, **_params )
         self.cmd('sysctl -w net.ipv4.ip_forward=1')
+        
+        self.mountPrivateDirs()
+        
+        self.cmd(f"mount --bind /etc/frr/configs/{self.name}/frr.conf /etc/frr/frr.conf")
+        self.cmd(f"mount --bind /etc/frr/configs/{self.name}/vtysh.conf /etc/frr/vtysh.conf")
+        self.cmd(f"mount --bind /etc/frr/configs/{self.name}/daemons /etc/frr/daemons")
+        
+        self.cmd('/usr/lib/frr/frrinit.sh start')
         return r
 
 class LegacySwitch(OVSSwitch):
@@ -2135,6 +2143,66 @@ class MiniEdit( Frame ):
             self.switchOpts[name]['nodeNum']=self.switchCount
             self.switchOpts[name]['hostname']=name
             self.switchOpts[name]['switchType']='legacyRouter'
+            
+            # Add or replace frr config files for new router
+            frr_conf = (
+                'frr version 7.2.1\n'
+                'frr defaults traditional\n'
+                'hostname {name}\n'
+                '!\n'
+                'line vty\n'
+                '!\n'
+            )
+
+            vtysh_conf = 'service integrated-vtysh-config'
+
+            daemons = (
+                'bgpd=no\n'
+                'ospfd=no\n'
+                'ospf6d=no\n'
+                'ripd=no\n'
+                'ripngd=no\n'
+                'isisd=no\n'
+                'pimd=no\n'
+                'ldpd=no\n'
+                'nhrpd=no\n'
+                'eigrpd=no\n'
+                'babeld=no\n'
+                'sharpd=no\n'
+                'pbrd=no\n'
+                'bfdd=no\n'
+                'fabricd=no\n'
+                'vrrpd=no\n\n'
+                'vtysh_enable=yes\n'
+                'zebra_options="  -A 127.0.0.1 -s 90000000"\n'
+                'bgpd_options="   -A 127.0.0.1"\n'
+                'ospfd_options="  -A 127.0.0.1"\n'
+                'ospf6d_options=" -A ::1"\n'
+                'ripd_options="   -A 127.0.0.1"\n'
+                'ripngd_options=" -A ::1"\n'
+                'isisd_options="  -A 127.0.0.1"\n'
+                'pimd_options="   -A 127.0.0.1"\n'
+                'ldpd_options="   -A 127.0.0.1"\n'
+                'nhrpd_options="  -A 127.0.0.1"\n'
+                'eigrpd_options=" -A 127.0.0.1"\n'
+                'babeld_options=" -A 127.0.0.1"\n'
+                'sharpd_options=" -A 127.0.0.1"\n'
+                'pbrd_options="   -A 127.0.0.1"\n'
+                'staticd_options="-A 127.0.0.1"\n'
+                'bfdd_options="   -A 127.0.0.1"\n'
+                'fabricd_options="-A 127.0.0.1"\n'
+                'vrrpd_options="  -A 127.0.0.1"\n'
+            )
+
+            os.system(f'mkdir -p /etc/frr/configs/{name}')
+            with open(f"/etc/frr/configs/{name}/frr.conf", mode="w") as f:
+                f.write(frr_conf.format(name=name))
+            
+            with open(f"/etc/frr/configs/{name}/vtysh.conf", mode="w") as f:
+                f.write(vtysh_conf)
+            
+            with open(f"/etc/frr/configs/{name}/daemons", mode="w") as f:
+                f.write(daemons)
         if node == 'LegacySwitch':
             self.switchCount += 1
             name = self.nodePrefixes[ node ] + str( self.switchCount )
@@ -3014,8 +3082,14 @@ class MiniEdit( Frame ):
             info( "\n\n NOTE: PLEASE REMEMBER TO EXIT THE CLI BEFORE YOU PRESS THE STOP BUTTON. Not exiting will prevent MiniEdit from quitting and will prevent you from starting the network again during this session.\n\n")
             CLI(self.net)
 
+    def kill_frr_daemons(self):
+        os.system('sudo pkill -f frr')
+
     def start( self ):
         "Start network."
+        
+        # kill all frr daemons before start
+        self.kill_frr_daemons()
         if self.net is None:
             self.net = self.build()
 
@@ -3073,6 +3147,8 @@ class MiniEdit( Frame ):
             self.net.stop()
         cleanUpScreens()
         self.net = None
+        
+        self.kill_frr_daemons()
 
     def do_linkPopup(self, event):
         # display the popup menu
